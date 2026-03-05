@@ -1,3 +1,66 @@
+# Market-Basket Analysis — FP-Growth ML Dashboard
+
+A self-learning association-rule engine powered by **FP-Growth** that evolves over 3 data iterations and serves an interactive web dashboard via Flask.
+
+---
+
+## Quick start
+
+> **Python 3.9 or higher is required.**
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/Netlopeds/data-mining-labreport.git
+cd data-mining-labreport
+```
+
+### 2. (Optional) Create a virtual environment
+
+```bash
+python -m venv .venv
+
+# activate — Windows
+.venv\Scripts\activate
+
+# activate — macOS / Linux
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+This installs:
+
+| Package | Version | Purpose |
+|---|---|---|
+| `flask` | ≥ 3.1.0 | Web server & dashboard |
+| `mlxtend` | ≥ 0.23.0 | FP-Growth & association-rule mining |
+| `pandas` | ≥ 2.0.0 | Data manipulation |
+| `numpy` | ≥ 1.26.0 | Numerical operations |
+| `scikit-learn` | ≥ 1.3.0 | Utility ML helpers |
+| `scipy` | ≥ 1.11.0 | Statistical functions |
+
+> If you prefer installing individually:
+> ```bash
+> pip install flask mlxtend pandas numpy scikit-learn scipy
+> ```
+
+### 4. Run the app
+
+```bash
+python app.py
+```
+
+Open your browser at **http://127.0.0.1:5000**
+
+The server pre-computes all 3 iterations automatically at startup (~2–5 s).
+
+---
+
 ## Intelligent mechanisms
 
 | # | Mechanism | What it does |
@@ -21,45 +84,6 @@ Data Mining Group/
 └── templates/
     └── index.html          # Full-page interactive dashboard
 ```
-
----
-
-## Setup
-
-### Option A — pip (recommended)
-
-```bash
-pip install -r requirements.txt
-```
-
-### Option B — conda / venv
-
-```bash
-# create virtual environment
-python -m venv .venv
-
-# activate (Windows)
-.venv\Scripts\activate
-
-# install
-pip install -r requirements.txt
-```
-
----
-
-## How to run
-
-```bash
-python app.py
-```
-
-Then open your browser at:
-
-```
-http://127.0.0.1:5000
-```
-
-The server pre-computes all 3 iterations automatically at startup (takes ~2–5 s).
 
 ---
 

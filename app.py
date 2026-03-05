@@ -1,0 +1,712 @@
+"""
+==============================================================================
+  MARKET-BASKET ANALYSIS "MACHINE LEARNING" SYSTEM
+  Using FP-Growth  |  Self-Learning  |  3-Iteration Evolution
+  Local Web Dashboard powered by Flask
+==============================================================================
+WHY FP-GROWTH OVER APRIORI?
+  - Apriori scans the database MULTIPLE times (once per k-itemset size) and
+    generates an exponentially large set of candidate itemsets.
+  - FP-Growth builds a compact Frequent-Pattern Tree (FP-Tree) by scanning
+    the database only TWICE, then mines patterns directly from the tree
+    without ever generating candidates.
+  - For our school-supply dataset (dense baskets, 10 items, 20 transactions)
+    FP-Growth is better because:
+      • Denser baskets → Apriori candidate explosion is worst here
+      • Smaller memory footprint (compressed tree vs. candidate lists)
+      • Faster convergence in iterative/streaming scenarios
+      • Clean integration with mlxtend and Pandas
+==============================================================================
+"""
+
+# --------------------------------------------------------------------------
+# IMPORTS
+# --------------------------------------------------------------------------
+from flask import Flask, jsonify, render_template, request
+import pandas as pd
+import numpy as np
+from mlxtend.preprocessing import TransactionEncoder
+# fpgrowth is the FP-Growth implementation in mlxtend
+from mlxtend.frequent_patterns import fpgrowth, association_rules
+import json
+import copy
+
+# --------------------------------------------------------------------------
+# FLASK APP INIT
+# --------------------------------------------------------------------------
+app = Flask(__name__)
+
+# --------------------------------------------------------------------------
+# TRANSACTION DATA
+# 10 unique items: Book, Pencil, Ballpen, Paper, Colored Pencil,
+#                  Bag, Notebook, Eraser, Tape, Marker
+# 20 total transactions split across 3 learning iterations:
+#   Iteration 1 → first 10 transactions  (initial learning)
+#   Iteration 2 → first 15 transactions  (+5 new baskets arrive)
+#   Iteration 3 → all 20 transactions    (+5 more baskets arrive)
+# --------------------------------------------------------------------------
+ALL_TRANSACTIONS = [
+    # ── BATCH 1: transactions 1-10 (initial data) ──────────────────────────
+    ["Book", "Pencil", "Ballpen"],                                   # T1
+    ["Book", "Colored Pencil", "Marker"],                            # T2
+    ["Colored Pencil", "Paper", "Book"],                             # T3
+    ["Colored Pencil", "Book", "Tape", "Paper", "Marker"],           # T4
+    ["Book", "Ballpen", "Eraser", "Colored Pencil", "Bag", "Tape"],  # T5
+    ["Marker", "Ballpen", "Paper"],                                  # T6
+    ["Notebook", "Ballpen", "Book", "Colored Pencil"],               # T7
+    ["Book", "Pencil"],                                              # T8
+    ["Tape", "Bag", "Marker"],                                       # T9
+    ["Notebook", "Paper", "Ballpen", "Book"],                        # T10
+    # ── BATCH 2: transactions 11-15 (new arrivals) ─────────────────────────
+    ["Paper", "Eraser"],                                             # T11
+    ["Colored Pencil", "Notebook", "Book", "Marker"],                # T12
+    ["Colored Pencil", "Book", "Tape"],                              # T13
+    ["Book", "Bag", "Eraser", "Notebook", "Colored Pencil"],         # T14
+    ["Eraser", "Tape", "Book"],                                      # T15
+    # ── BATCH 3: transactions 16-20 (new arrivals) ─────────────────────────
+    ["Notebook", "Ballpen"],                                         # T16
+    ["Notebook", "Paper"],                                           # T17
+    ["Colored Pencil", "Tape", "Book"],                              # T18
+    ["Notebook", "Tape", "Paper"],                                   # T19
+    ["Book", "Marker", "Eraser", "Notebook", "Colored Pencil", "Bag"] # T20
+]
+
+# Define which transactions belong to each batch (cumulative)
+BATCH_SIZES = {1: 10, 2: 15, 3: 20}
+
+# --------------------------------------------------------------------------
+# FP-GROWTH ML ENGINE
+# --------------------------------------------------------------------------
+class FPGrowthMLEngine:
+    """
+    Self-learning market-basket engine powered by FP-Growth.
+
+    Intelligent mechanisms implemented:
+      1. Auto-Threshold Adaptation  – system finds optimal minsup/minconf
+                                       targeting ~10-15 high-quality rules
+      2. Drift Detection            – flags items whose support changed >15%
+                                       between iterations
+      3. Custom Rule Scoring        – weighted score: 0.40*lift_norm
+                                                     + 0.35*confidence
+                                                     + 0.25*support
+      4. Rule Stability Testing     – top-3 rules tested at minsup ±0.05
+      5. Model Versioning           – per-iteration snapshots for comparison
+    """
+
+    def __init__(self):
+        self.iteration_models = {}   # stores model snapshots per iteration
+        self.current_iter = 0
+
+    # ── 1. AUTO-THRESHOLD LOGIC ──────────────────────────────────────────
+    # ┌─────────────────────────────────────────────────────────────────────┐
+    # │  HOW TO CHANGE minsup / minconf                                     │
+    # │                                                                     │
+    # │  Option A — change the TARGET RULE COUNT (recommended):            │
+    # │    Edit target_min and target_max below.                            │
+    # │    The system will auto-select the best (minsup, minconf) pair      │
+    # │    that produces a rule count in that range.                        │
+    # │    Default: target_min=8, target_max=20                             │
+    # │                                                                     │
+    # │  Option B — hard-code fixed values:                                 │
+    # │    After the search loop, add:                                      │
+    # │      best_minsup  = 0.30   # your chosen value                     │
+    # │      best_minconf = 0.60   # your chosen value                     │
+    # │    before the `return` statement.                                   │
+    # │                                                                     │
+    # │  Option C — disable auto-selection entirely:                        │
+    # │    Replace the call to self.auto_threshold() in run_iteration()     │
+    # │    with fixed values:                                               │
+    # │      auto_minsup, auto_minconf = 0.30, 0.60                        │
+    # │      auto_reason = 'Fixed thresholds (manual override)'            │
+    # └─────────────────────────────────────────────────────────────────────┘
+    def auto_threshold(self, df, target_min=8, target_max=20):
+        """
+        Walk minsup from 0.10 to 0.50 in steps of 0.05.
+        Pick the highest minsup whose rule count falls in [target_min, target_max].
+        If no single value satisfies the range, fall back to the value that
+        gives the closest count to the midpoint of the range.
+        This avoids both 'too few rules' (uninformative) and
+        'too many rules' (overwhelming/noisy).
+        """
+        best_minsup   = 0.20       # sensible default
+        best_minconf  = 0.50
+        best_distance = float("inf")
+        target_mid    = (target_min + target_max) / 2   # ideal = 14
+
+        candidate_results = []
+
+        for ms in np.arange(0.10, 0.55, 0.05):
+            ms = round(float(ms), 2)
+            try:
+                fi = fpgrowth(df, min_support=ms, use_colnames=True, max_len=None)
+                if fi.empty:
+                    continue
+                for mc in [0.50, 0.60, 0.70]:
+                    r = association_rules(fi, metric="confidence", min_threshold=mc)
+                    rule_count = len(r)
+                    dist = abs(rule_count - target_mid)
+                    candidate_results.append({
+                        "minsup": ms, "minconf": mc,
+                        "rule_count": rule_count, "dist": dist
+                    })
+                    if target_min <= rule_count <= target_max:
+                        if dist < best_distance:
+                            best_distance = dist
+                            best_minsup   = ms
+                            best_minconf  = mc
+            except Exception:
+                continue
+
+        # If no candidate landed in the range, pick closest
+        if best_distance == float("inf") and candidate_results:
+            best = min(candidate_results, key=lambda x: x["dist"])
+            best_minsup  = best["minsup"]
+            best_minconf = best["minconf"]
+
+        reasoning = (
+            f"Tried minsup ∈ [0.10–0.50] × minconf ∈ [0.50, 0.60, 0.70]. "
+            f"Targeted {target_min}–{target_max} rules (ideal ≈ {target_mid:.0f}). "
+            f"Selected minsup={best_minsup}, minconf={best_minconf}."
+        )
+        return best_minsup, best_minconf, reasoning
+
+    # ── 2. CUSTOM RULE SCORING ────────────────────────────────────────────
+    def score_rules(self, rules_df):
+        """
+        Composite quality score for each rule:
+          score = 0.40 * (lift normalised to 0-1)
+                + 0.35 * confidence
+                + 0.25 * support
+        Normalisation: lift_norm = (lift - 1) / (max_lift - 1 + ε)
+        A lift of 1 means independence; higher is better.
+        """
+        if rules_df.empty:
+            return rules_df
+        max_lift = rules_df["lift"].max()
+        min_lift = 1.0
+        eps = 1e-9
+        rules_df = rules_df.copy()
+        rules_df["lift_norm"] = (rules_df["lift"] - min_lift) / (max_lift - min_lift + eps)
+        rules_df["score"] = (
+            0.40 * rules_df["lift_norm"]
+          + 0.35 * rules_df["confidence"]
+          + 0.25 * rules_df["support"]
+        )
+        return rules_df
+
+    # ── 3. DRIFT DETECTION ────────────────────────────────────────────────
+    def detect_drift(self, prev_model, curr_model, threshold=0.15):
+        """
+        Compare single-item (k=1) support between consecutive iterations.
+        An item is 'drifting' if |new_support - old_support| > threshold (15%).
+        Drift means buying patterns are shifting — the system should update
+        its recommendations accordingly (which it does automatically each iteration).
+        """
+        if prev_model is None:
+            return []
+
+        def support_map(model):
+            fi = model["frequent_itemsets"]
+            k1 = fi[fi["k"] == 1]
+            return {list(row["itemsets"])[0]: row["support"]
+                    for _, row in k1.iterrows()}
+
+        prev_map = support_map(prev_model)
+        curr_map = support_map(curr_model)
+        drift = []
+        for item, curr_sup in curr_map.items():
+            if item in prev_map:
+                delta = curr_sup - prev_map[item]
+                if abs(delta) > threshold:
+                    direction = "↑ rising" if delta > 0 else "↓ falling"
+                    drift.append({
+                        "item": item,
+                        "prev_support": round(prev_map[item], 3),
+                        "curr_support": round(curr_sup, 3),
+                        "delta": round(delta, 3),
+                        "direction": direction
+                    })
+        return drift
+
+    # ── 4. RULE STABILITY TEST ────────────────────────────────────────────
+    def stability_test(self, df, top_rules, base_minsup, base_minconf):
+        """
+        Test whether the top-3 rules remain frequent when minsup is nudged
+        up (+0.05) and down (-0.05).
+        A 'stable' rule appears in all three threshold settings.
+        This validates that recommendations are robust, not threshold-artifacts.
+        """
+        results = []
+        test_sup = [
+            round(max(0.05, base_minsup - 0.05), 2),
+            base_minsup,
+            round(min(0.90, base_minsup + 0.05), 2)
+        ]
+        if top_rules.empty:
+            return results
+
+        top3 = top_rules.head(3)
+        for _, row in top3.iterrows():
+            ant = row["antecedents"]
+            con = row["consequents"]
+            appearances = {}
+            for ms in test_sup:
+                try:
+                    fi   = fpgrowth(df, min_support=ms, use_colnames=True)
+                    ruls = association_rules(fi, metric="confidence",
+                                            min_threshold=base_minconf)
+                    found = any(
+                        (r["antecedents"] == ant and r["consequents"] == con)
+                        for _, r in ruls.iterrows()
+                    )
+                    appearances[ms] = found
+                except Exception:
+                    appearances[ms] = False
+
+            stable = all(appearances.values())
+            results.append({
+                "rule":       f"{set(ant)} → {set(con)}",
+                "antecedent": "{" + ", ".join(sorted(ant)) + "}",
+                "consequent": "{" + ", ".join(sorted(con)) + "}",
+                "appearances": {str(k): v for k, v in appearances.items()},
+                "stable":     stable,
+                "verdict":    "✅ STABLE" if stable else "⚠️ UNSTABLE"
+            })
+        return results
+
+    # ── CORE: RUN A SINGLE ITERATION ─────────────────────────────────────
+    def run_iteration(self, transactions, iteration_number):
+        """
+        Full pipeline for one iteration:
+          1. One-hot encode
+          2. Auto-threshold selection
+          3. FP-Growth frequent itemset mining
+          4. Association rule generation + custom scoring
+          5. Drift detection vs previous iteration
+          6. Rule stability test
+          7. Build all recommendation outputs
+          8. Snapshot model for versioning
+        """
+        N = len(transactions)
+
+        # Step 1: One-hot encode ─────────────────────────────────────────
+        te = TransactionEncoder()
+        df = pd.DataFrame(
+            te.fit(transactions).transform(transactions),
+            columns=te.columns_
+        )
+
+        # Step 2: Auto-threshold selection ──────────────────────────────
+        auto_minsup, auto_minconf, auto_reason = self.auto_threshold(df)
+
+        # Step 3: FP-Growth mining ───────────────────────────────────────
+        fi = fpgrowth(df, min_support=auto_minsup, use_colnames=True, max_len=None)
+        fi["support_count"] = (fi["support"] * N).round().astype(int)
+        fi["k"] = fi["itemsets"].apply(len)
+        fi_sorted = fi.sort_values(
+            ["k", "support", "itemsets"],
+            ascending=[True, False, True]
+        ).reset_index(drop=True)
+
+        # Step 4: Rule generation + scoring ─────────────────────────────
+        try:
+            rules = association_rules(fi_sorted, metric="confidence",
+                                      min_threshold=auto_minconf)
+        except Exception:
+            rules = pd.DataFrame()
+
+        if not rules.empty:
+            rules["support_count"] = (rules["support"] * N).round().astype(int)
+            rules = self.score_rules(rules)
+            rules.sort_values("score", ascending=False, inplace=True)
+            rules.reset_index(drop=True, inplace=True)
+
+        # Step 5: Drift detection ────────────────────────────────────────
+        prev_model = self.iteration_models.get(iteration_number - 1)
+        current_model_stub = {"frequent_itemsets": fi_sorted}
+        drift = self.detect_drift(prev_model, current_model_stub)
+
+        # Step 6: Stability test ─────────────────────────────────────────
+        stability = []
+        if not rules.empty:
+            stability = self.stability_test(df, rules, auto_minsup, auto_minconf)
+
+        # Step 7: Build recommendation outputs ──────────────────────────
+        bundles         = self._build_bundles(fi_sorted)
+        assoc_rules_out = self._build_rules_output(rules)
+        homepage        = self._build_homepage_ranking(fi_sorted)
+        freq_together   = self._build_freq_together(fi_sorted)
+        cross_sell      = self._build_cross_sell(rules)
+        promos          = self._build_promos(fi_sorted, rules)
+        biz_insights    = self._build_business_insights(fi_sorted, rules, N)
+
+        # Step 8: Snapshot ───────────────────────────────────────────────
+        snapshot = {
+            "iteration":          iteration_number,
+            "n_transactions":     N,
+            "auto_minsup":        auto_minsup,
+            "auto_minconf":       auto_minconf,
+            "auto_reason":        auto_reason,
+            "frequent_itemsets":  fi_sorted,          # kept as DataFrame
+            "rules":              rules,               # kept as DataFrame
+            "drift":              drift,
+            "stability":          stability,
+            "bundles":            bundles,
+            "assoc_rules":        assoc_rules_out,
+            "homepage":           homepage,
+            "freq_together":      freq_together,
+            "cross_sell":         cross_sell,
+            "promos":             promos,
+            "biz_insights":       biz_insights,
+        }
+        self.iteration_models[iteration_number] = snapshot
+        self.current_iter = iteration_number
+        return snapshot
+
+    # ── RECOMMENDATION BUILDERS ──────────────────────────────────────────
+
+    def _build_bundles(self, fi_sorted):
+        """Top frequent itemsets grouped by size k."""
+        bundles = []
+        for _, row in fi_sorted.iterrows():
+            items = sorted(row["itemsets"])
+            bundles.append({
+                "itemset":       "{" + ", ".join(items) + "}",
+                "items":         items,
+                "k":             int(row["k"]),
+                "support":       round(float(row["support"]), 3),
+                "support_count": int(row["support_count"]),
+                "explanation":   (
+                    f"Bought together in {int(row['support_count'])} transactions "
+                    f"({row['support']*100:.1f}% of all baskets). "
+                    + ("Bundle discount candidate." if row["k"] >= 2 else "High-traffic single item.")
+                )
+            })
+        return bundles
+
+    def _build_rules_output(self, rules):
+        """Serialisable list of top association rules."""
+        if rules.empty:
+            return []
+        out = []
+        for _, row in rules.iterrows():
+            ant = sorted(row["antecedents"])
+            con = sorted(row["consequents"])
+            out.append({
+                "antecedent":    "{" + ", ".join(ant) + "}",
+                "consequent":    "{" + ", ".join(con) + "}",
+                "support":       round(float(row["support"]), 3),
+                "support_count": int(row["support_count"]),
+                "confidence":    round(float(row["confidence"]), 3),
+                "lift":          round(float(row["lift"]), 3),
+                "leverage":      round(float(row["leverage"]), 3),
+                "conviction":    round(float(row["conviction"]) if row["conviction"] != np.inf else 999.0, 3),
+                "score":         round(float(row["score"]), 3),
+            })
+        return out
+
+    def _build_homepage_ranking(self, fi_sorted):
+        """
+        E-commerce homepage ranking:
+        Rank single items by support (popularity).
+        Items appearing in more baskets get top slots.
+        """
+        k1 = fi_sorted[fi_sorted["k"] == 1].copy()
+        ranking = []
+        for rank, (_, row) in enumerate(k1.iterrows(), 1):
+            item = list(row["itemsets"])[0]
+            ranking.append({
+                "rank":          rank,
+                "item":          item,
+                "support":       round(float(row["support"]), 3),
+                "support_count": int(row["support_count"]),
+                "reason":        f"Appears in {int(row['support_count'])} baskets — rank #{rank} on homepage."
+            })
+        return ranking
+
+    def _build_freq_together(self, fi_sorted):
+        """
+        'Frequently Bought Together' widget (Amazon-style).
+        Uses 2-itemsets and 3-itemsets sorted by support.
+        """
+        k23 = fi_sorted[fi_sorted["k"].isin([2, 3])].copy()
+        widgets = []
+        for _, row in k23.head(10).iterrows():
+            items = sorted(row["itemsets"])
+            widgets.append({
+                "items":         items,
+                "label":         " + ".join(items),
+                "support":       round(float(row["support"]), 3),
+                "support_count": int(row["support_count"]),
+                "k":             int(row["k"]),
+            })
+        return widgets
+
+    def _build_cross_sell(self, rules):
+        """
+        Cross-sell map: for each possible 'cart item', list what to recommend.
+        Based on rules where the antecedent is a single item.
+        Sorted by confidence so the most reliable suggestion appears first.
+        """
+        if rules.empty:
+            return {}
+        cross = {}
+        single_ant = rules[rules["antecedents"].apply(len) == 1].copy()
+        single_ant.sort_values("confidence", ascending=False, inplace=True)
+        for _, row in single_ant.iterrows():
+            trigger = list(row["antecedents"])[0]
+            rec     = sorted(row["consequents"])
+            entry = {
+                "recommend": "{" + ", ".join(rec) + "}",
+                "items":     rec,
+                "confidence": round(float(row["confidence"]), 3),
+                "lift":       round(float(row["lift"]), 3),
+                "score":      round(float(row["score"]), 3),
+            }
+            cross.setdefault(trigger, []).append(entry)
+        return cross
+
+    def _build_promos(self, fi_sorted, rules):
+        """
+        Promo suggestion generator:
+          • Buy-2-Get-Discount  → top 2-itemsets
+          • Bundle Deal         → top 3-itemsets
+          • Cross-Sell Promo    → high-confidence 2-item rules
+        """
+        promos = []
+
+        # Buy-2-Get-Discount
+        k2 = fi_sorted[fi_sorted["k"] == 2].head(5)
+        for _, row in k2.iterrows():
+            items = sorted(row["itemsets"])
+            promos.append({
+                "type":    "Buy-2-Get-Discount",
+                "items":   items,
+                "label":   f"Buy {items[0]} + {items[1]} → Get 10% off!",
+                "support": round(float(row["support"]), 3),
+                "basis":   f"Co-purchased in {int(row['support_count'])}/{int(fi_sorted['support_count'].max())} transactions."
+            })
+
+        # Bundle Deal
+        k3 = fi_sorted[fi_sorted["k"] == 3].head(3)
+        for _, row in k3.iterrows():
+            items = sorted(row["itemsets"])
+            promos.append({
+                "type":    "Bundle Deal",
+                "items":   items,
+                "label":   f"Bundle: {' + '.join(items)} → Save 15%!",
+                "support": round(float(row["support"]), 3),
+                "basis":   f"Appears together in {int(row['support_count'])} baskets."
+            })
+
+        # Cross-Sell Promo
+        if not rules.empty:
+            top_rules = rules[rules["confidence"] >= 0.70].head(3)
+            for _, row in top_rules.iterrows():
+                ant = sorted(row["antecedents"])
+                con = sorted(row["consequents"])
+                promos.append({
+                    "type":    "Cross-Sell Promo",
+                    "items":   ant + con,
+                    "label":   f"Added {', '.join(ant)} to cart? Get {', '.join(con)} at 5% off!",
+                    "support": round(float(row["support"]), 3),
+                    "basis":   f"Confidence: {row['confidence']*100:.0f}% | Lift: {row['lift']:.2f}"
+                })
+
+        return promos
+
+    def _build_business_insights(self, fi_sorted, rules, N):
+        """
+        Business intelligence layer:
+          • Shelf placement: pair high-lift items close together
+          • Slow movers: items with low support — promote or discount
+          • Power items: items in many itemsets — place at store entrance
+          • Margin opportunity: high-lift pairs for upselling
+        """
+        insights = []
+
+        # Power items (appear in many frequent itemsets)
+        item_freq = {}
+        for _, row in fi_sorted.iterrows():
+            for item in row["itemsets"]:
+                item_freq[item] = item_freq.get(item, 0) + 1
+        if item_freq:
+            power_item = max(item_freq, key=item_freq.get)
+            insights.append({
+                "type":    "Power Item",
+                "insight": f"'{power_item}' appears in {item_freq[power_item]} frequent itemsets. "
+                           f"Place at store entrance and homepage slot #1."
+            })
+
+        # Slow movers (k=1, support below median)
+        k1 = fi_sorted[fi_sorted["k"] == 1]
+        if len(k1) > 1:
+            median_sup = k1["support"].median()
+            slow = k1[k1["support"] < median_sup]
+            for _, row in slow.iterrows():
+                item = list(row["itemsets"])[0]
+                insights.append({
+                    "type":    "Slow Mover",
+                    "insight": f"'{item}' support={row['support']:.2f} below median "
+                               f"({median_sup:.2f}). Bundle with high-traffic items or discount."
+                })
+
+        # Shelf placement (high-lift pairs)
+        if not rules.empty:
+            best_lift = rules.nlargest(3, "lift")
+            for _, row in best_lift.iterrows():
+                ant = sorted(row["antecedents"])
+                con = sorted(row["consequents"])
+                insights.append({
+                    "type":    "Shelf Placement",
+                    "insight": f"Place {', '.join(ant)} next to {', '.join(con)} "
+                               f"(lift={row['lift']:.2f} — {row['lift']:.1f}× more likely than chance)."
+                })
+
+        # Margin / upsell
+        if not rules.empty and len(rules) > 0:
+            top_score = rules.iloc[0]
+            ant = sorted(top_score["antecedents"])
+            con = sorted(top_score["consequents"])
+            insights.append({
+                "type":    "Upsell Opportunity",
+                "insight": f"When customer buys {', '.join(ant)}, "
+                           f"upsell {', '.join(con)} with a combo price. "
+                           f"Score={top_score['score']:.3f}, Conf={top_score['confidence']:.2f}."
+            })
+
+        return insights
+
+    # ── SNAPSHOT → JSON-SAFE DICT ─────────────────────────────────────────
+    def model_to_json(self, snapshot):
+        """Convert a snapshot (which contains DataFrames) to a JSON-safe dict."""
+
+        def fi_to_list(fi_df):
+            out = []
+            for _, row in fi_df.iterrows():
+                items = sorted(row["itemsets"])
+                out.append({
+                    "itemset":       "{" + ", ".join(items) + "}",
+                    "items":         items,
+                    "k":             int(row["k"]),
+                    "support":       round(float(row["support"]), 3),
+                    "support_count": int(row["support_count"]),
+                })
+            return out
+
+        return {
+            "iteration":      snapshot["iteration"],
+            "n_transactions": snapshot["n_transactions"],
+            "auto_minsup":    snapshot["auto_minsup"],
+            "auto_minconf":   snapshot["auto_minconf"],
+            "auto_reason":    snapshot["auto_reason"],
+            "freq_itemsets":  fi_to_list(snapshot["frequent_itemsets"]),
+            "rules":          snapshot["assoc_rules"],
+            "drift":          snapshot["drift"],
+            "stability":      snapshot["stability"],
+            "bundles":        snapshot["bundles"],
+            "homepage":       snapshot["homepage"],
+            "freq_together":  snapshot["freq_together"],
+            "cross_sell":     snapshot["cross_sell"],
+            "promos":         snapshot["promos"],
+            "biz_insights":   snapshot["biz_insights"],
+        }
+
+
+# --------------------------------------------------------------------------
+# GLOBAL ENGINE INSTANCE
+# We pre-compute all 3 iterations at startup so the API just reads results.
+# --------------------------------------------------------------------------
+engine = FPGrowthMLEngine()
+
+def precompute_all_iterations():
+    """Run FP-Growth on each cumulative batch at server startup."""
+    for iter_num, size in BATCH_SIZES.items():
+        batch = ALL_TRANSACTIONS[:size]
+        engine.run_iteration(batch, iter_num)
+    print("[ML Engine] All 3 iterations pre-computed.")
+
+# --------------------------------------------------------------------------
+# FLASK ROUTES
+# --------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    """Serve the main dashboard page."""
+    return render_template("index.html")
+
+
+@app.route("/api/iteration/<int:n>")
+def get_iteration(n):
+    """
+    Return JSON data for iteration n (1, 2, or 3).
+    The engine already has all snapshots pre-computed.
+    """
+    if n not in engine.iteration_models:
+        return jsonify({"error": f"Iteration {n} not found."}), 404
+    data = engine.model_to_json(engine.iteration_models[n])
+    return jsonify(data)
+
+
+@app.route("/api/cross_sell/<item>")
+def cross_sell_item(item):
+    """
+    Return cross-sell recommendations for a given cart item
+    from the latest iteration.
+    """
+    snap = engine.iteration_models.get(engine.current_iter)
+    if snap is None:
+        return jsonify({"error": "No model computed yet."}), 500
+    recs = snap["cross_sell"].get(item, [])
+    return jsonify({"item": item, "recommendations": recs})
+
+
+@app.route("/api/items")
+def get_items():
+    """Return the list of all unique items for the cross-sell widget."""
+    items = sorted({item for t in ALL_TRANSACTIONS for item in t})
+    return jsonify(items)
+
+
+@app.route("/api/summary")
+def get_summary():
+    """
+    Side-by-side comparison of all 3 iterations:
+    shows how minsup, rule count, and top-rule change over time.
+    """
+    summary = []
+    for i in [1, 2, 3]:
+        snap = engine.iteration_models.get(i)
+        if snap:
+            rules_df = snap["rules"]
+            top_rule = {}
+            if not rules_df.empty:
+                r = rules_df.iloc[0]
+                top_rule = {
+                    "antecedent": "{" + ", ".join(sorted(r["antecedents"])) + "}",
+                    "consequent": "{" + ", ".join(sorted(r["consequents"])) + "}",
+                    "lift":       round(float(r["lift"]), 3),
+                    "score":      round(float(r["score"]), 3),
+                }
+            summary.append({
+                "iteration":     i,
+                "n_transactions":snap["n_transactions"],
+                "auto_minsup":   snap["auto_minsup"],
+                "auto_minconf":  snap["auto_minconf"],
+                "n_itemsets":    len(snap["frequent_itemsets"]),
+                "n_rules":       len(rules_df) if not rules_df.empty else 0,
+                "top_rule":      top_rule,
+            })
+    return jsonify(summary)
+
+
+# --------------------------------------------------------------------------
+# MAIN
+# --------------------------------------------------------------------------
+if __name__ == "__main__":
+    precompute_all_iterations()
+    print("\n" + "="*60)
+    print("  Market-Basket ML Dashboard")
+    print("  Open your browser at:  http://127.0.0.1:5000")
+    print("="*60 + "\n")
+    app.run(debug=False, port=5000)
