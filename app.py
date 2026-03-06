@@ -10,11 +10,11 @@ WHY FP-GROWTH OVER APRIORI?
   - FP-Growth builds a compact Frequent-Pattern Tree (FP-Tree) by scanning
     the database only TWICE, then mines patterns directly from the tree
     without ever generating candidates.
-  - For our school-supply dataset (dense baskets, 10 items, 20 transactions)
-    FP-Growth is better because:
-      • Denser baskets → Apriori candidate explosion is worst here
-      • Smaller memory footprint (compressed tree vs. candidate lists)
-      • Faster convergence in iterative/streaming scenarios
+  - For our Pokémon/collectibles dataset (sparse baskets, 57 items, 1050
+    transactions from Dataset_A.csv) FP-Growth is better because:
+      • Compressed FP-Tree fits large, sparse transaction sets in memory
+      • Candidate-free mining avoids exponential blowup on 57-item domain
+      • Faster convergence with adaptive threshold auto-selection
       • Clean integration with mlxtend and Pandas
 ==============================================================================
 """
@@ -30,6 +30,8 @@ from mlxtend.preprocessing import TransactionEncoder
 from mlxtend.frequent_patterns import fpgrowth, association_rules
 import json
 import copy
+import os
+import sys
 
 # --------------------------------------------------------------------------
 # FLASK APP INIT
@@ -37,42 +39,62 @@ import copy
 app = Flask(__name__)
 
 # --------------------------------------------------------------------------
-# TRANSACTION DATA
-# 10 unique items: Book, Pencil, Ballpen, Paper, Colored Pencil,
-#                  Bag, Notebook, Eraser, Tape, Marker
-# 20 total transactions split across 3 learning iterations:
-#   Iteration 1 → first 10 transactions  (initial learning)
-#   Iteration 2 → first 15 transactions  (+5 new baskets arrive)
-#   Iteration 3 → all 20 transactions    (+5 more baskets arrive)
+# TRANSACTION DATA — loaded from Dataset_A.csv
+# Each row in the CSV is one basket (items separated by commas).
+# The full dataset is split into 3 cumulative batches (approx. thirds) to
+# simulate iterative / streaming learning:
+#   Iteration 1 → first ~1/3 of transactions  (initial learning)
+#   Iteration 2 → first ~2/3 of transactions  (+new arrivals)
+#   Iteration 3 → all transactions            (+remaining arrivals)
 # --------------------------------------------------------------------------
-ALL_TRANSACTIONS = [
-    # ── BATCH 1: transactions 1-10 (initial data) ──────────────────────────
-    ["Book", "Pencil", "Ballpen"],                                   # T1
-    ["Book", "Colored Pencil", "Marker"],                            # T2
-    ["Colored Pencil", "Paper", "Book"],                             # T3
-    ["Colored Pencil", "Book", "Tape", "Paper", "Marker"],           # T4
-    ["Book", "Ballpen", "Eraser", "Colored Pencil", "Bag", "Tape"],  # T5
-    ["Marker", "Ballpen", "Paper"],                                  # T6
-    ["Notebook", "Ballpen", "Book", "Colored Pencil"],               # T7
-    ["Book", "Pencil"],                                              # T8
-    ["Tape", "Bag", "Marker"],                                       # T9
-    ["Notebook", "Paper", "Ballpen", "Book"],                        # T10
-    # ── BATCH 2: transactions 11-15 (new arrivals) ─────────────────────────
-    ["Paper", "Eraser"],                                             # T11
-    ["Colored Pencil", "Notebook", "Book", "Marker"],                # T12
-    ["Colored Pencil", "Book", "Tape"],                              # T13
-    ["Book", "Bag", "Eraser", "Notebook", "Colored Pencil"],         # T14
-    ["Eraser", "Tape", "Book"],                                      # T15
-    # ── BATCH 3: transactions 16-20 (new arrivals) ─────────────────────────
-    ["Notebook", "Ballpen"],                                         # T16
-    ["Notebook", "Paper"],                                           # T17
-    ["Colored Pencil", "Tape", "Book"],                              # T18
-    ["Notebook", "Tape", "Paper"],                                   # T19
-    ["Book", "Marker", "Eraser", "Notebook", "Colored Pencil", "Bag"] # T20
-]
+def _load_transactions_from_csv(path):
+    """Read a CSV file — each non-empty row becomes one transaction list."""
+    transactions = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                items = [item.strip() for item in line.split(",") if item.strip()]
+                if items:
+                    transactions.append(items)
+    return transactions
 
-# Define which transactions belong to each batch (cumulative)
-BATCH_SIZES = {1: 10, 2: 15, 3: 20}
+
+def _prompt_csv_path():
+    """
+    Ask the user which CSV to load at startup.
+    Press Enter to use the default (Dataset_A.csv).
+    """
+    _default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Dataset_A.csv")
+    print("\n" + "="*60)
+    print("  POKEHIVE — Market Basket Analysis")
+    print("="*60)
+    print(f"  Default dataset: {_default}")
+    print("  Paste a CSV path below, or press Enter to use the default.")
+    print("-"*60)
+    user_input = input("  CSV path: ").strip()
+    path = user_input if user_input else _default
+    if not os.path.isfile(path):
+        print(f"  Not found: {path}")
+        sys.exit(1)
+    print(f"  Loading: {os.path.basename(path)}")
+    print("="*60 + "\n")
+    return path
+
+
+_CSV_PATH = _prompt_csv_path()
+
+ALL_TRANSACTIONS = _load_transactions_from_csv(_CSV_PATH)
+
+# Define which transactions belong to each batch (cumulative thirds)
+_N = len(ALL_TRANSACTIONS)
+BATCH_SIZES = {
+    1: max(1, _N // 3),
+    2: max(1, (_N * 2) // 3),
+    3: _N,
+}
+print(f"[Data] Loaded {_N} transactions. "
+      f"Batches: {BATCH_SIZES[1]} / {BATCH_SIZES[2]} / {BATCH_SIZES[3]}")
 
 # --------------------------------------------------------------------------
 # FP-GROWTH ML ENGINE
@@ -128,20 +150,36 @@ class FPGrowthMLEngine:
         This avoids both 'too few rules' (uninformative) and
         'too many rules' (overwhelming/noisy).
         """
-        best_minsup   = 0.20       # sensible default
+        best_minsup   = 0.01       # sensible default for CSV dataset
         best_minconf  = 0.50
         best_distance = float("inf")
         target_mid    = (target_min + target_max) / 2   # ideal = 14
 
         candidate_results = []
 
-        for ms in np.arange(0.10, 0.55, 0.05):
-            ms = round(float(ms), 2)
+        # Build a search range that covers both sparse large datasets and
+        # small dense ones.  For n >= 100 we scan a fine-grained low range
+        # (0.003 – 0.05, step 0.001) plus a coarser high range (0.05 – 0.50);
+        # for small datasets the original 0.10–0.50 range is sufficient.
+        n_rows = len(df)
+        if n_rows >= 100:
+            _low  = np.round(np.arange(0.003, 0.051, 0.001), 3)
+            _high = np.round(np.arange(0.05,  0.55,  0.05 ), 2)
+            _minsup_range = np.unique(np.concatenate([_low, _high]))
+        else:
+            _minsup_range = np.round(np.arange(0.10, 0.55, 0.05), 2)
+
+        # Include higher confidence thresholds so sparse datasets can still
+        # yield rules even when support is very low.
+        _minconf_values = [0.50, 0.60, 0.70, 0.80, 0.90]
+
+        for ms in _minsup_range:
+            ms = round(float(ms), 3)
             try:
                 fi = fpgrowth(df, min_support=ms, use_colnames=True, max_len=None)
                 if fi.empty:
                     continue
-                for mc in [0.50, 0.60, 0.70]:
+                for mc in _minconf_values:
                     r = association_rules(fi, metric="confidence", min_threshold=mc)
                     rule_count = len(r)
                     dist = abs(rule_count - target_mid)
@@ -163,8 +201,11 @@ class FPGrowthMLEngine:
             best_minsup  = best["minsup"]
             best_minconf = best["minconf"]
 
+        lo_str = f"{_minsup_range[0]:.3f}"
+        hi_str = f"{_minsup_range[-1]:.2f}"
+        mc_str = str(_minconf_values)
         reasoning = (
-            f"Tried minsup ∈ [0.10–0.50] × minconf ∈ [0.50, 0.60, 0.70]. "
+            f"Tried minsup ∈ [{lo_str}–{hi_str}] × minconf ∈ {mc_str}. "
             f"Targeted {target_min}–{target_max} rules (ideal ≈ {target_mid:.0f}). "
             f"Selected minsup={best_minsup}, minconf={best_minconf}."
         )
@@ -394,7 +435,9 @@ class FPGrowthMLEngine:
             con = sorted(row["consequents"])
             out.append({
                 "antecedent":    "{" + ", ".join(ant) + "}",
+                "antecedent_items": ant,
                 "consequent":    "{" + ", ".join(con) + "}",
+                "consequent_items": con,
                 "support":       round(float(row["support"]), 3),
                 "support_count": int(row["support_count"]),
                 "confidence":    round(float(row["confidence"]), 3),
@@ -706,7 +749,8 @@ def get_summary():
 if __name__ == "__main__":
     precompute_all_iterations()
     print("\n" + "="*60)
-    print("  Market-Basket ML Dashboard")
+    print(f"  Dataset : {os.path.basename(_CSV_PATH)}")
+    print(f"  Records : {_N} transactions")
     print("  Open your browser at:  http://127.0.0.1:5000")
     print("="*60 + "\n")
     app.run(debug=False, port=5000)

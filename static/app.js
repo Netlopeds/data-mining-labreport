@@ -1,39 +1,116 @@
 
-const { useState, useEffect, useRef, useCallback } = React;
+const { useState, useEffect, useRef } = React;
 
-const PAGES = [
-  { id: "overview",      label: "Dashboard" },
-  { id: "itemsets",      label: "Frequent Itemsets" },
-  { id: "rules",         label: "Association Rules" },
-  { id: "homepage",      label: "Homepage Ranking" },
-  { id: "freq-together", label: "Bought Together" },
-  { id: "crosssell",     label: "Cross-Sell" },
-  { id: "promos",        label: "Promo Suggestions" },
-  { id: "biz-insights",  label: "Business Insights" },
+const PRIMARY_PAGES = [
+  { id: "overview", label: "Dashboard" },
+  { id: "itemsets", label: "Frequent Itemsets" },
+  { id: "rules", label: "Association Rules" },
 ];
+
+const INSIGHT_PAGES = [
+  { id: "homepage", label: "Homepage Ranking" },
+  { id: "freq-together", label: "Bought Together" },
+  { id: "crosssell", label: "Cross-Sell" },
+  { id: "promos", label: "Promo Suggestions" },
+  { id: "biz-insights", label: "Business Insights" },
+];
+
+const DASH_COLORS = {
+  coral: "rgba(239, 113, 89, 0.65)",
+  coralBorder: "#ef7159",
+  teal: "rgba(23, 198, 185, 0.36)",
+  tealBorder: "#17c6b9",
+  axis: "#71839d",
+  grid: "#e4ebf4",
+};
 
 
 
 // ── Header (logo + inline nav) ───────────────────────────────────────────────
 function Header({ activePage, onPageChange }) {
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const insightActive = INSIGHT_PAGES.some(p => p.id === activePage);
+  const openDropdown = () => setDropdownOpen(true);
+  const closeDropdown = () => setDropdownOpen(false);
+  const handleDropdownBlur = (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      closeDropdown();
+    }
+  };
+
   return (
     <header className="site-header">
       <div className="logo">
-        <svg className="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/>
-        </svg>
-        <span className="logo-text">Market Basket</span>
+        <img className="logo-image" src="/static/logo.png" alt="PokeHive" />
+        <div className="logo-copy">
+          <span className="logo-text">PokeHive</span>
+          <span className="logo-subtext">Market Basket Analysis</span>
+        </div>
       </div>
       <nav className="header-nav">
-        {PAGES.map(p => (
-          <div
+        {PRIMARY_PAGES.map(p => (
+          <button
+            type="button"
             key={p.id}
             className={"nav-item" + (activePage === p.id ? " active" : "")}
             onClick={() => onPageChange(p.id)}
-          >{p.label}</div>
+          >{p.label}</button>
         ))}
+
+        <div
+          className={"nav-dropdown" + (dropdownOpen ? " open" : "")}
+          onMouseEnter={openDropdown}
+          onMouseLeave={closeDropdown}
+          onFocusCapture={openDropdown}
+          onBlurCapture={handleDropdownBlur}
+        >
+          <button
+            type="button"
+            className={"nav-item nav-dropdown-trigger" + (insightActive ? " active" : "")}
+            aria-haspopup="menu"
+            aria-expanded={dropdownOpen ? "true" : "false"}
+          >
+            Insights
+            <span className="nav-caret">▾</span>
+          </button>
+
+          <div className="nav-dropdown-menu" role="menu" aria-label="Insights pages">
+            {INSIGHT_PAGES.map(p => (
+              <button
+                type="button"
+                key={p.id}
+                className={"nav-dropdown-item" + (activePage === p.id ? " active" : "")}
+                onClick={() => {
+                  onPageChange(p.id);
+                  closeDropdown();
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </nav>
     </header>
+  );
+}
+
+function HeroRibbon({ items }) {
+  return (
+    <div className="hero-ribbon">
+      {items.map(item => (
+        <span key={item} className="hero-ribbon-chip">{item}</span>
+      ))}
+    </div>
+  );
+}
+
+function MetricPill({ label, value, tone = "" }) {
+  return (
+    <div className={"metric-pill" + (tone ? " " + tone : "")}>
+      <span className="metric-pill-label">{label}</span>
+      <strong className="metric-pill-value">{value}</strong>
+    </div>
   );
 }
 
@@ -87,8 +164,8 @@ function ChartBar({ data }) {
         datasets: [{
           label: "Support",
           data:  k1.map(f => f.support),
-          backgroundColor: "#CC000077",
-          borderColor: "#CC0000",
+          backgroundColor: DASH_COLORS.coral,
+          borderColor: DASH_COLORS.coralBorder,
           borderWidth: 1,
           borderRadius: 4,
         }],
@@ -97,8 +174,8 @@ function ChartBar({ data }) {
         responsive: true,
         plugins: { legend: { display: false } },
         scales: {
-          y: { min: 0, max: 1, ticks: { color: "#999" }, grid: { color: "#f0f0f0" } },
-          x: { ticks: { color: "#666" }, grid: { display: false } },
+          y: { min: 0, max: 1, ticks: { color: DASH_COLORS.axis }, grid: { color: DASH_COLORS.grid } },
+          x: { ticks: { color: DASH_COLORS.axis }, grid: { display: false } },
         },
       },
     });
@@ -122,8 +199,8 @@ function ChartBubble({ data }) {
           data: data.rules.map(r => ({
             x: r.confidence, y: r.lift, r: Math.max(4, r.support * 28),
           })),
-          backgroundColor: "#2196a677",
-          borderColor: "#2196a6",
+          backgroundColor: DASH_COLORS.teal,
+          borderColor: DASH_COLORS.tealBorder,
           borderWidth: 1,
         }],
       },
@@ -132,12 +209,12 @@ function ChartBubble({ data }) {
         plugins: { legend: { display: false } },
         scales: {
           y: {
-            title: { display: true, text: "Lift", color: "#999" },
-            ticks: { color: "#999" }, grid: { color: "#f0f0f0" },
+            title: { display: true, text: "Lift", color: DASH_COLORS.axis },
+            ticks: { color: DASH_COLORS.axis }, grid: { color: DASH_COLORS.grid },
           },
           x: {
-            title: { display: true, text: "Confidence", color: "#999" },
-            min: 0, max: 1, ticks: { color: "#999" }, grid: { color: "#f0f0f0" },
+            title: { display: true, text: "Confidence", color: DASH_COLORS.axis },
+            min: 0, max: 1, ticks: { color: DASH_COLORS.axis }, grid: { color: DASH_COLORS.grid },
           },
         },
       },
@@ -152,22 +229,50 @@ function PageOverview({ d, summaryData, currentIter }) {
   if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
   return (
     <div>
-      <div className="page-heading">
-        <div className="accent-bar"></div>
-        <h1>Dashboard Overview</h1>
-        <p>FP-Growth self-learning market-basket engine · school supply store · 3 learning iterations</p>
+      <div className="page-heading hero-heading">
+        <div className="page-heading-copy">
+          <div className="accent-bar"></div>
+          <div className="page-kicker">PokeHive Dashboard</div>
+          <h1>PokeHive Command Center</h1>
+          <p>Learn which products rise together, which bundles deserve promotion, and which items should dominate the storefront.</p>
+          <HeroRibbon items={[
+            `${d.n_transactions} baskets analysed`,
+            `${d.rules.length} strong rules`,
+            `Iteration ${currentIter} active`,
+          ]} />
+        </div>
+        <div className="hero-stat-stack">
+          <div className="hero-stat-card">
+            <span className="hero-stat-label">Top Lift</span>
+            <strong>{d.rules.length ? d.rules[0].lift.toFixed(2) : "0.00"}</strong>
+          </div>
+          <div className="hero-stat-card alt">
+            <span className="hero-stat-label">Best Support</span>
+            <strong>{d.freq_itemsets.length ? `${(d.freq_itemsets[0].support * 100).toFixed(1)}%` : "0%"}</strong>
+          </div>
+        </div>
       </div>
 
       {/* Timeline */}
       <div className="timeline">
         {[1, 2, 3].map(n => (
-          <div key={n} className={"tl-step" + (currentIter >= n ? " done" : "")}>
-            <div className="tl-dot">{n}</div>
-            <div className="tl-label">
-              {n === 1 ? "Initial Learning" : n === 2 ? "+5 Baskets" : "+5 Baskets"}
-              <br/>{n === 1 ? "10 transactions" : n === 2 ? "15 total" : "20 total"}
-            </div>
-          </div>
+          (() => {
+            const s = summaryData.find(row => row.iteration === n);
+            const labels = {
+              1: "Initial Learning",
+              2: "Expanded Pattern Map",
+              3: "Full Dataset View",
+            };
+            return (
+              <div key={n} className={"tl-step" + (currentIter >= n ? " done" : "")}>
+                <div className="tl-dot">{n}</div>
+                <div className="tl-label">
+                  {labels[n]}
+                  <br/>{s ? `${s.n_transactions} transactions` : "Loading..."}
+                </div>
+              </div>
+            );
+          })()
         ))}
       </div>
 
@@ -222,35 +327,66 @@ function PageOverview({ d, summaryData, currentIter }) {
           <h3>Iteration-by-Iteration Comparison</h3>
           <span className="chip">Model versioning</span>
         </div>
-        <div className="tbl-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Iter</th><th>Transactions</th><th>minsup</th><th>minconf</th>
-                <th>Itemsets</th><th>Rules</th><th>Best Rule</th><th>Score</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summaryData.map(row => (
-                <tr key={row.iteration}>
-                  <td><strong>Iter {row.iteration}</strong></td>
-                  <td>{row.n_transactions}</td>
-                  <td>{row.auto_minsup}</td>
-                  <td>{row.auto_minconf}</td>
-                  <td>{row.n_itemsets}</td>
-                  <td>{row.n_rules}</td>
-                  <td style={{ whiteSpace: "normal", maxWidth: 220 }}>
-                    {row.top_rule && row.top_rule.antecedent
-                      ? <><span style={{ color: "#CC0000", fontWeight: 600 }}>{row.top_rule.antecedent}</span>
-                          {" "}<span className="rule-arrow">→</span>{" "}
-                          {row.top_rule.consequent}</>
-                      : <span style={{ color: "#aaa" }}>—</span>}
-                  </td>
-                  <td><strong>{row.top_rule?.score ?? "—"}</strong></td>
+        <div className="summary-table-shell compact-color-card">
+          <div className="tbl-wrap compact-summary-wrap">
+            <table className="compact-summary-table">
+              <thead>
+                <tr>
+                  <th>Iter</th>
+                  <th>Traffic</th>
+                  <th>Thresholds</th>
+                  <th>Patterns</th>
+                  <th>Best Rule</th>
+                  <th>Score</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {summaryData.map(row => (
+                  <tr key={row.iteration} className={currentIter === row.iteration ? "summary-row-active" : ""}>
+                    <td>
+                      <div className="summary-iter-badge">0{row.iteration}</div>
+                    </td>
+                    <td>
+                      <div className="summary-stack">
+                        <strong>{row.n_transactions}</strong>
+                        <span>baskets analysed</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="summary-stack summary-stack-tight">
+                        <span>sup {row.auto_minsup}</span>
+                        <span>conf {row.auto_minconf}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="summary-patterns">
+                        <span className="summary-mini-chip tone-blue">{row.n_itemsets} itemsets</span>
+                        <span className="summary-mini-chip tone-gold">{row.n_rules} rules</span>
+                      </div>
+                    </td>
+                    <td>
+                      {row.top_rule && row.top_rule.antecedent ? (
+                        <div className="summary-rule-block">
+                          <span className="summary-rule-part antecedent">{row.top_rule.antecedent}</span>
+                          <span className="summary-rule-arrow">→</span>
+                          <span className="summary-rule-part consequent">{row.top_rule.consequent}</span>
+                        </div>
+                      ) : (
+                        <span className="summary-empty">No standout rule</span>
+                      )}
+                    </td>
+                    <td>
+                      {row.top_rule?.score ? (
+                        <div className="summary-score-pill">{row.top_rule.score}</div>
+                      ) : (
+                        <span className="summary-empty">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -268,39 +404,38 @@ function PageItemsets({ d, searchQ }) {
     <div>
       <div className="page-heading">
         <div className="accent-bar"></div>
+        <div className="page-kicker">Pattern Library</div>
         <h1>Frequent Itemsets</h1>
-        <p>All item combinations meeting the auto-selected support threshold</p>
+        <p>Every repeated basket combination that passes the current support threshold.</p>
       </div>
       <div className="card">
         <div className="card-head">
           <h3>All Frequent Itemsets</h3>
           <span className="chip">{rows.length} itemsets</span>
         </div>
-        <div className="tbl-wrap">
-          <table>
+        <div className="data-tbl-wrap">
+          <table className="data-compact-table">
             <thead>
-              <tr><th>#</th><th>Itemset</th><th>k</th><th>Count</th><th>Support</th><th>Bar</th></tr>
+              <tr>
+                <th>#</th>
+                <th>Items</th>
+                <th>Size</th>
+                <th>Count</th>
+                <th>Support</th>
+              </tr>
             </thead>
             <tbody>
               {rows.map((f, i) => (
-                <tr key={i} className={i === 0 ? "top-row" : ""}>
-                  <td style={{ color: "#aaa" }}>{i + 1}</td>
-                  <td>{f.items.map(it => <span key={it} className="item-tag">{it}</span>)}</td>
-                  <td><strong>{f.k}</strong></td>
-                  <td>{f.support_count}</td>
-                  <td>{f.support.toFixed(3)}</td>
+                <tr key={i} className={i === 0 ? "data-row-featured" : ""}>
+                  <td><div className="data-rank-badge">#{i + 1}</div></td>
                   <td>
-                    <div className="bar-wrap">
-                      <div className="bar-bg">
-                        <div className="bar-fill teal"
-                             style={{ width: (f.support / maxSup * 100).toFixed(1) + "%" }}>
-                        </div>
-                      </div>
-                      <span style={{ fontSize: ".72rem", color: "#999" }}>
-                        {(f.support * 100).toFixed(1)}%
-                      </span>
+                    <div className="item-tag-row">
+                      {f.items.map(it => <span key={it} className="item-tag">{it}</span>)}
                     </div>
                   </td>
+                  <td><span className="data-size-chip">{f.k}-item</span></td>
+                  <td><strong className="data-num">{f.support_count}</strong></td>
+                  <td><span className="data-pill tone-blue">{f.support.toFixed(3)}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -324,60 +459,44 @@ function PageRules({ d, searchQ }) {
     <div>
       <div className="page-heading">
         <div className="accent-bar"></div>
+        <div className="page-kicker">Rule Engine</div>
         <h1>Association Rules</h1>
-        <p>Ranked by composite score · 0.40×lift_norm + 0.35×confidence + 0.25×support</p>
+        <p>Confidence, lift, and support blended into a ranked action list for recommendations.</p>
       </div>
       <div className="card">
         <div className="card-head">
           <h3>All Rules</h3>
           <span className="chip">{rows.length} rules</span>
         </div>
-        <div className="tbl-wrap">
-          <table>
+        <div className="data-tbl-wrap">
+          <table className="data-compact-table rules-compact-table">
             <thead>
               <tr>
-                <th>#</th><th>Antecedent</th><th></th><th>Consequent</th>
-                <th>Count</th><th>Support</th><th>Confidence</th>
-                <th>Lift</th><th>Leverage</th><th>Conviction</th><th>Score</th>
+                <th>#</th>
+                <th>Rule</th>
+                <th>Support</th>
+                <th>Confidence</th>
+                <th>Lift</th>
+                <th>Leverage</th>
+                <th>Conviction</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i} className={i === 0 ? "top-row" : ""}>
-                  <td style={{ color: "#aaa" }}>{i + 1}</td>
-                  <td style={{ color: "#CC0000", fontWeight: 600 }}>{r.antecedent}</td>
-                  <td><span className="rule-arrow">→</span></td>
-                  <td style={{ fontWeight: 600 }}>{r.consequent}</td>
-                  <td>{r.support_count}</td>
-                  <td>{r.support.toFixed(3)}</td>
+                <tr key={i} className={i === 0 ? "data-row-featured" : ""}>
+                  <td><div className="data-rank-badge">#{i + 1}</div></td>
                   <td>
-                    <div className="bar-wrap">
-                      <div className="bar-bg">
-                        <div className="bar-fill gold"
-                             style={{ width: (r.confidence * 100).toFixed(1) + "%" }}>
-                        </div>
-                      </div>
-                      <span style={{ fontSize: ".72rem" }}>
-                        {(r.confidence * 100).toFixed(0)}%
-                      </span>
+                    <div className="rule-inline-flow">
+                      <span className="rule-inline-ant">{r.antecedent}</span>
+                      <span className="rule-inline-arrow">→</span>
+                      <span className="rule-inline-con">{r.consequent}</span>
                     </div>
                   </td>
-                  <td style={{
-                    color: r.lift >= 1.5 ? "#2196a6" : "#333",
-                    fontWeight: r.lift >= 1.5 ? 700 : 400,
-                  }}>{r.lift.toFixed(3)}</td>
-                  <td>{r.leverage.toFixed(3)}</td>
-                  <td>{r.conviction >= 999 ? "∞" : r.conviction.toFixed(3)}</td>
-                  <td>
-                    <div className="bar-wrap">
-                      <div className="bar-bg">
-                        <div className="bar-fill"
-                             style={{ width: (r.score / maxScore * 100).toFixed(1) + "%" }}>
-                        </div>
-                      </div>
-                      <strong style={{ fontSize: ".78rem" }}>{r.score.toFixed(3)}</strong>
-                    </div>
-                  </td>
+                  <td><span className="data-pill">{r.support.toFixed(3)}</span></td>
+                  <td><span className="data-pill tone-gold">{(r.confidence * 100).toFixed(0)}%</span></td>
+                  <td><span className={"data-pill" + (r.lift >= 1.5 ? " tone-teal" : "")}>{r.lift.toFixed(3)}</span></td>
+                  <td><span className="data-pill">{r.leverage.toFixed(3)}</span></td>
+                  <td><span className="data-pill">{r.conviction >= 999 ? "∞" : r.conviction.toFixed(3)}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -397,8 +516,9 @@ function PageHomepage({ d }) {
     <div>
       <div className="page-heading">
         <div className="accent-bar"></div>
+        <div className="page-kicker">Front Shelf</div>
         <h1>Homepage Ranking</h1>
-        <p>Product ranking by basket popularity — what customers see first on the homepage</p>
+        <p>Put your highest-traffic products in the first slots customers see.</p>
       </div>
       <div className="rank-grid">
         {d.homepage.map((h, i) => (
@@ -425,8 +545,9 @@ function PageFreqTogether({ d }) {
     <div>
       <div className="page-heading">
         <div className="accent-bar"></div>
+        <div className="page-kicker">Bundle Builder</div>
         <h1>Frequently Bought Together</h1>
-        <p>2-item and 3-item bundles ranked by co-purchase support</p>
+        <p>Pair and trio bundles that deserve featured placement or combo pricing.</p>
       </div>
       {d.freq_together.length === 0
         ? <div className="empty">No bundles at current threshold.</div>
@@ -458,50 +579,160 @@ function PageFreqTogether({ d }) {
 // ── PageCrossSell ─────────────────────────────────────────────────────────────
 function PageCrossSell({ d, allItems }) {
   const [selected, setSelected] = useState("");
+  const [cartItems, setCartItems] = useState([]);
   useEffect(() => {
     if (allItems.length && !selected) setSelected(allItems[0]);
   }, [allItems]);
 
   if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
-  const recs = (d.cross_sell[selected] || []).slice(0, 6);
+  const cartSet = new Set(cartItems);
+  const recommendationMap = new Map();
+  const rules = Array.isArray(d.rules) ? d.rules : [];
+
+  rules.forEach(rule => {
+    const antecedentItems = Array.isArray(rule.antecedent_items) ? rule.antecedent_items : [];
+    const consequentItems = Array.isArray(rule.consequent_items) ? rule.consequent_items : [];
+    if (!antecedentItems.length || !consequentItems.length) return;
+
+    const antecedentMatched = antecedentItems.every(item => cartSet.has(item));
+    if (!antecedentMatched) return;
+
+    consequentItems.forEach(item => {
+      if (cartSet.has(item)) return;
+      const existing = recommendationMap.get(item) || {
+        item,
+        matchedRules: 0,
+        matchedAntecedents: new Set(),
+        bestConfidence: 0,
+        bestLift: 0,
+        bestScore: 0,
+        bestSupport: 0,
+      };
+      existing.matchedRules += 1;
+      antecedentItems.forEach(trigger => existing.matchedAntecedents.add(trigger));
+      existing.bestConfidence = Math.max(existing.bestConfidence, rule.confidence);
+      existing.bestLift = Math.max(existing.bestLift, rule.lift);
+      existing.bestScore = Math.max(existing.bestScore, rule.score || 0);
+      existing.bestSupport = Math.max(existing.bestSupport, rule.support || 0);
+      recommendationMap.set(item, existing);
+    });
+  });
+
+  const recs = Array.from(recommendationMap.values())
+    .map(rec => ({
+      ...rec,
+      triggerCount: rec.matchedAntecedents.size,
+      triggers: Array.from(rec.matchedAntecedents),
+    }))
+    .sort((a, b) => {
+      if (b.matchedRules !== a.matchedRules) return b.matchedRules - a.matchedRules;
+      if (b.triggerCount !== a.triggerCount) return b.triggerCount - a.triggerCount;
+      if (b.bestConfidence !== a.bestConfidence) return b.bestConfidence - a.bestConfidence;
+      if (b.bestLift !== a.bestLift) return b.bestLift - a.bestLift;
+      if (b.bestSupport !== a.bestSupport) return b.bestSupport - a.bestSupport;
+      return b.bestScore - a.bestScore;
+    })
+    .slice(0, 8);
+
+  const addItemToCart = (item) => {
+    if (!item) return;
+    setCartItems(prev => (prev.includes(item) ? prev : [...prev, item]));
+  };
+
+  const removeItemFromCart = (item) => {
+    setCartItems(prev => prev.filter(entry => entry !== item));
+  };
 
   return (
     <div>
       <div className="page-heading">
         <div className="accent-bar"></div>
+        <div className="page-kicker">Cart Booster</div>
         <h1>Cross-Sell Widget</h1>
-        <p>Select an item added to cart — see what the ML model recommends next</p>
+        <p>Add products into a live cart and let the model surface the strongest next-buy recommendations.</p>
       </div>
       <div className="card">
         <div className="card-head"><h3>Add to Cart Simulator</h3></div>
-        <select className="cs-select" value={selected} onChange={e => setSelected(e.target.value)}>
-          {allItems.map(i => (
-            <option key={i} value={i}>{i}</option>
-          ))}
-        </select>
+        <div className="cs-controls">
+          <select className="cs-select" value={selected} onChange={e => setSelected(e.target.value)}>
+            {allItems.map(i => (
+              <option key={i} value={i}>{i}</option>
+            ))}
+          </select>
+          <button
+            className="cs-btn cs-btn-primary"
+            type="button"
+            onClick={() => addItemToCart(selected)}
+            disabled={!selected || cartItems.includes(selected)}
+          >
+            {cartItems.includes(selected) ? "Already in Cart" : "Add to Cart"}
+          </button>
+          <button
+            className="cs-btn cs-btn-muted"
+            type="button"
+            onClick={() => setCartItems([])}
+            disabled={cartItems.length === 0}
+          >
+            Clear Cart
+          </button>
+        </div>
+
+        <div className="cs-cart-shell">
+          <div className="cs-cart-head">
+            <div>
+              <div className="cs-cart-label">Current Cart</div>
+              <strong>{cartItems.length} item{cartItems.length === 1 ? "" : "s"}</strong>
+            </div>
+            <span className="chip">Live recommendations</span>
+          </div>
+          {cartItems.length === 0 ? (
+            <div className="empty">Your cart is empty. Add a product to start generating recommendations.</div>
+          ) : (
+            <div className="cs-cart-list">
+              {cartItems.map(item => (
+                <div key={item} className="cs-cart-item">
+                  <div>
+                    <div className="cs-cart-item-title">{item}</div>
+                    <div className="cs-cart-item-sub">Qty 1 • Present in basket model</div>
+                  </div>
+                  <button className="cs-remove-btn" type="button" onClick={() => removeItemFromCart(item)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="cs-result">
-          {recs.length === 0
-            ? <div className="empty">No cross-sell rules for <strong>{selected}</strong> at this threshold.</div>
+          {cartItems.length === 0
+            ? <div className="empty">Recommendations will appear here after items are added to the cart.</div>
+            : recs.length === 0
+            ? <div className="empty">No cross-sell rules matched the current cart at this iteration.</div>
             : recs.map((r, i) => (
               <div key={i} className="cs-row">
                 <div className="cs-row-num">{i + 1}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: ".7rem", color: "#aaa", marginBottom: 3,
-                    textTransform: "uppercase", letterSpacing: ".05em" }}>Also recommend</div>
-                  <div className="cs-row-items">
-                    {r.items.map((it, idx) => (
-                      <span key={it} style={{ marginRight: 8 }}>
-                        {idx > 0 && <span style={{ color: "#ccc", marginRight: 8 }}>·</span>}
-                        {it}
+                <div className="cs-row-main">
+                  <div className="cs-row-kicker">Recommended next add</div>
+                  <div className="cs-row-items">{r.item}</div>
+                  <div className="cs-trigger-list">
+                    Triggered by {r.triggers.map((trigger, idx) => (
+                      <span key={trigger}>
+                        {idx > 0 && <span className="cs-trigger-dot">•</span>}
+                        {trigger}
                       </span>
                     ))}
                   </div>
                 </div>
                 <div className="cs-row-meta">
-                  Conf: <strong>{(r.confidence * 100).toFixed(0)}%</strong><br/>
-                  Lift: <strong>{r.lift.toFixed(2)}</strong><br/>
-                  Score: <strong>{r.score.toFixed(3)}</strong>
+                  Rules: <strong>{r.matchedRules}</strong><br/>
+                  Match: <strong>{r.triggerCount}</strong><br/>
+                  Conf: <strong>{(r.bestConfidence * 100).toFixed(0)}%</strong><br/>
+                  Lift: <strong>{r.bestLift.toFixed(2)}</strong>
                 </div>
+                <button className="cs-btn cs-btn-primary cs-rec-btn" type="button" onClick={() => addItemToCart(r.item)}>
+                  Add
+                </button>
               </div>
             ))}
         </div>
@@ -518,8 +749,9 @@ function PagePromos({ d }) {
     <div>
       <div className="page-heading">
         <div className="accent-bar"></div>
+        <div className="page-kicker">Promo Lab</div>
         <h1>Promo Suggestions</h1>
-        <p>Auto-generated promotions derived from frequent co-purchase patterns</p>
+        <p>Offer ideas generated directly from bundle strength and cross-sell confidence.</p>
       </div>
       {d.promos.length === 0
         ? <div className="empty">No promos at current thresholds. Try Iteration 2 or 3.</div>
@@ -549,8 +781,9 @@ function PageBizInsights({ d }) {
     <div>
       <div className="page-heading">
         <div className="accent-bar"></div>
+        <div className="page-kicker">Store Strategy</div>
         <h1>Business Insights</h1>
-        <p>Shelf placement, power items, and upsell opportunities — derived from your transaction data</p>
+        <p>Shelf placement, power items, and upsell opportunities derived from real customer baskets.</p>
       </div>
       <div className="card">
         <div className="card-head"><h3>Store Recommendations</h3></div>
@@ -613,7 +846,7 @@ function App() {
   const d = iterData[currentIter];
 
   return (
-    <div>
+    <div className={"app-shell theme-" + activePage}>
       <Header activePage={activePage} onPageChange={setActivePage} />
       <IterBanner currentIter={currentIter} onIterChange={handleIterChange} summaryData={summaryData} iterData={iterData} />
 
