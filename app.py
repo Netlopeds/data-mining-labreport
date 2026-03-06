@@ -28,15 +28,22 @@ import numpy as np
 from mlxtend.preprocessing import TransactionEncoder
 # fpgrowth is the FP-Growth implementation in mlxtend
 from mlxtend.frequent_patterns import fpgrowth, association_rules
-import json
-import copy
+from werkzeug.utils import secure_filename
+from threading import Lock
+from datetime import datetime
+import csv
 import os
-import sys
 
 # --------------------------------------------------------------------------
 # FLASK APP INIT
 # --------------------------------------------------------------------------
 app = Flask(__name__)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+DATASET_LOCK = Lock()
 
 # --------------------------------------------------------------------------
 # TRANSACTION DATA — loaded from Dataset_A.csv
@@ -48,53 +55,31 @@ app = Flask(__name__)
 #   Iteration 3 → all transactions            (+remaining arrivals)
 # --------------------------------------------------------------------------
 def _load_transactions_from_csv(path):
-    """Read a CSV file — each non-empty row becomes one transaction list."""
+    """Read a CSV file — each non-empty row becomes one cleaned transaction list."""
     transactions = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items = [item.strip() for item in line.split(",") if item.strip()]
-                if items:
-                    transactions.append(items)
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            cleaned = []
+            for item in row:
+                value = str(item).strip()
+                if value:
+                    cleaned.append(value)
+            if cleaned:
+                transactions.append(list(dict.fromkeys(cleaned)))
     return transactions
 
 
-def _prompt_csv_path():
-    """
-    Ask the user which CSV to load at startup.
-    Press Enter to use the default (Dataset_A.csv).
-    """
-    _default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Dataset_A.csv")
-    print("\n" + "="*60)
-    print("  POKEHIVE — Market Basket Analysis")
-    print("="*60)
-    print(f"  Default dataset: {_default}")
-    print("  Paste a CSV path below, or press Enter to use the default.")
-    print("-"*60)
-    user_input = input("  CSV path: ").strip()
-    path = user_input if user_input else _default
-    if not os.path.isfile(path):
-        print(f"  Not found: {path}")
-        sys.exit(1)
-    print(f"  Loading: {os.path.basename(path)}")
-    print("="*60 + "\n")
-    return path
+def _default_csv_path():
+    return os.path.join(BASE_DIR, "dataset_A.csv")
 
 
-_CSV_PATH = _prompt_csv_path()
-
-ALL_TRANSACTIONS = _load_transactions_from_csv(_CSV_PATH)
-
-# Define which transactions belong to each batch (cumulative thirds)
-_N = len(ALL_TRANSACTIONS)
-BATCH_SIZES = {
-    1: max(1, _N // 3),
-    2: max(1, (_N * 2) // 3),
-    3: _N,
-}
-print(f"[Data] Loaded {_N} transactions. "
-      f"Batches: {BATCH_SIZES[1]} / {BATCH_SIZES[2]} / {BATCH_SIZES[3]}")
+def _build_batch_sizes(transaction_count):
+    return {
+        1: max(1, transaction_count // 3),
+        2: max(1, (transaction_count * 2) // 3),
+        3: transaction_count,
+    }
 
 # --------------------------------------------------------------------------
 # FP-GROWTH ML ENGINE
@@ -658,16 +643,183 @@ class FPGrowthMLEngine:
 
 # --------------------------------------------------------------------------
 # GLOBAL ENGINE INSTANCE
-# We pre-compute all 3 iterations at startup so the API just reads results.
+# The dataset can be replaced at runtime through the upload pipeline.
 # --------------------------------------------------------------------------
 engine = FPGrowthMLEngine()
+ALL_TRANSACTIONS = []
+BATCH_SIZES = {}
+_CSV_PATH = ""
+_DATASET_META = {
+    "name": "",
+    "source": "",
+    "stored_path": "",
+    "transaction_count": 0,
+    "item_count": 0,
+    "batch_sizes": {},
+    "processed_at": "",
+}
 
-def precompute_all_iterations():
-    """Run FP-Growth on each cumulative batch at server startup."""
-    for iter_num, size in BATCH_SIZES.items():
-        batch = ALL_TRANSACTIONS[:size]
-        engine.run_iteration(batch, iter_num)
+
+def _build_summary_payload(current_engine):
+    """Side-by-side comparison of all 3 iterations."""
+    summary = []
+    for i in [1, 2, 3]:
+        snap = current_engine.iteration_models.get(i)
+        if snap:
+            rules_df = snap["rules"]
+            top_rule = {}
+            if not rules_df.empty:
+                r = rules_df.iloc[0]
+                top_rule = {
+                    "antecedent": "{" + ", ".join(sorted(r["antecedents"])) + "}",
+                    "consequent": "{" + ", ".join(sorted(r["consequents"])) + "}",
+                    "lift":       round(float(r["lift"]), 3),
+                    "score":      round(float(r["score"]), 3),
+                }
+            summary.append({
+                "iteration":      i,
+                "n_transactions": snap["n_transactions"],
+                "auto_minsup":    snap["auto_minsup"],
+                "auto_minconf":   snap["auto_minconf"],
+                "n_itemsets":     len(snap["frequent_itemsets"]),
+                "n_rules":        len(rules_df) if not rules_df.empty else 0,
+                "top_rule":       top_rule,
+            })
+    return summary
+
+
+def _build_pipeline_report(transactions, batch_sizes, current_engine, dataset_meta):
+    unique_items = sorted({item for txn in transactions for item in txn})
+    latest = current_engine.iteration_models.get(3) or current_engine.iteration_models.get(current_engine.current_iter)
+    latest_rules = latest["assoc_rules"] if latest else []
+    latest_itemsets = latest["frequent_itemsets"] if latest is not None else pd.DataFrame()
+    top_rule = latest_rules[0] if latest_rules else None
+    return [
+        {
+            "id": "data-source",
+            "label": "Data Source",
+            "detail": f"Loaded {dataset_meta['name']} from the {dataset_meta['source']} pipeline.",
+        },
+        {
+            "id": "cleaning",
+            "label": "Cleaning",
+            "detail": f"Normalized {len(transactions)} transactions and removed blank values.",
+        },
+        {
+            "id": "encoding",
+            "label": "Encoding",
+            "detail": f"Encoded {len(unique_items)} unique items with one-hot transaction vectors.",
+        },
+        {
+            "id": "mining-engine",
+            "label": "Mining Engine",
+            "detail": f"Ran FP-Growth across batches {batch_sizes[1]} / {batch_sizes[2]} / {batch_sizes[3]}.",
+        },
+        {
+            "id": "rules",
+            "label": "Rules",
+            "detail": f"Generated {len(latest_rules)} ranked association rules in the latest iteration.",
+        },
+        {
+            "id": "scoring",
+            "label": "Scoring",
+            "detail": (
+                f"Best rule score {top_rule['score']:.3f} with lift {top_rule['lift']:.3f}."
+                if top_rule else
+                "No qualifying rules reached the current thresholds."
+            ),
+        },
+        {
+            "id": "storage",
+            "label": "Storage",
+            "detail": f"Stored 3 iteration snapshots and saved the source file at {dataset_meta['stored_path']}.",
+        },
+        {
+            "id": "recommendations",
+            "label": "Recommendations",
+            "detail": (
+                f"Prepared {len(latest['homepage'])} homepage ranks, {len(latest['promos'])} promos, and {len(latest_itemsets)} frequent itemsets."
+                if latest else
+                "No recommendation outputs are available yet."
+            ),
+        },
+    ]
+
+
+def _build_bootstrap_payload(current_engine=None, include_iteration_one=True):
+    current_engine = current_engine or engine
+    iteration_one = None
+    if include_iteration_one and 1 in current_engine.iteration_models:
+        iteration_one = current_engine.model_to_json(current_engine.iteration_models[1])
+
+    return {
+        "ready": bool(ALL_TRANSACTIONS),
+        "dataset": _DATASET_META,
+        "summary": _build_summary_payload(current_engine),
+        "items": sorted({item for txn in ALL_TRANSACTIONS for item in txn}),
+        "iteration_1": iteration_one,
+        "pipeline": _build_pipeline_report(ALL_TRANSACTIONS, BATCH_SIZES, current_engine, _DATASET_META) if ALL_TRANSACTIONS else [],
+    }
+
+
+def _process_dataset(path, dataset_name, source_label):
+    global engine, ALL_TRANSACTIONS, BATCH_SIZES, _CSV_PATH, _DATASET_META
+
+    transactions = _load_transactions_from_csv(path)
+    if not transactions:
+        raise ValueError("The uploaded CSV has no valid transactions.")
+
+    batch_sizes = _build_batch_sizes(len(transactions))
+    next_engine = FPGrowthMLEngine()
+    for iter_num, size in batch_sizes.items():
+        next_engine.run_iteration(transactions[:size], iter_num)
+
+    dataset_meta = {
+        "name": dataset_name,
+        "source": source_label,
+        "stored_path": path,
+        "transaction_count": len(transactions),
+        "item_count": len({item for txn in transactions for item in txn}),
+        "batch_sizes": batch_sizes,
+        "processed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    with DATASET_LOCK:
+        engine = next_engine
+        ALL_TRANSACTIONS = transactions
+        BATCH_SIZES = batch_sizes
+        _CSV_PATH = path
+        _DATASET_META = dataset_meta
+
+    print(
+        f"[Data] Loaded {dataset_meta['transaction_count']} transactions from {dataset_name}. "
+        f"Batches: {batch_sizes[1]} / {batch_sizes[2]} / {batch_sizes[3]}"
+    )
     print("[ML Engine] All 3 iterations pre-computed.")
+    return _build_bootstrap_payload(next_engine)
+
+
+def initialize_empty_dataset_state():
+    """Start the app with no active dataset until the user uploads one."""
+    global engine, ALL_TRANSACTIONS, BATCH_SIZES, _CSV_PATH, _DATASET_META
+
+    with DATASET_LOCK:
+        engine = FPGrowthMLEngine()
+        ALL_TRANSACTIONS = []
+        BATCH_SIZES = {}
+        _CSV_PATH = ""
+        _DATASET_META = {
+            "name": "",
+            "source": "",
+            "stored_path": "",
+            "transaction_count": 0,
+            "item_count": 0,
+            "batch_sizes": {},
+            "processed_at": "",
+        }
+
+
+initialize_empty_dataset_state()
 
 # --------------------------------------------------------------------------
 # FLASK ROUTES
@@ -677,6 +829,37 @@ def precompute_all_iterations():
 def index():
     """Serve the main dashboard page."""
     return render_template("index.html")
+
+
+@app.route("/api/bootstrap")
+def bootstrap():
+    """Return everything needed to render the initial UI state."""
+    return jsonify(_build_bootstrap_payload())
+
+
+@app.route("/api/pipeline/upload", methods=["POST"])
+def upload_pipeline_csv():
+    """Accept a CSV upload, rebuild the model, and return fresh dashboard data."""
+    uploaded = request.files.get("file")
+    if uploaded is None or not uploaded.filename:
+        return jsonify({"error": "Please choose a CSV file to upload."}), 400
+
+    if not uploaded.filename.lower().endswith(".csv"):
+        return jsonify({"error": "Only CSV uploads are supported."}), 400
+
+    safe_name = secure_filename(uploaded.filename) or "dataset.csv"
+    stored_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{safe_name}"
+    stored_path = os.path.join(UPLOAD_DIR, stored_name)
+    uploaded.save(stored_path)
+
+    try:
+        payload = _process_dataset(stored_path, uploaded.filename, "upload")
+    except ValueError as exc:
+        if os.path.exists(stored_path):
+            os.remove(stored_path)
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify(payload)
 
 
 @app.route("/api/iteration/<int:n>")
@@ -713,44 +896,21 @@ def get_items():
 
 @app.route("/api/summary")
 def get_summary():
-    """
-    Side-by-side comparison of all 3 iterations:
-    shows how minsup, rule count, and top-rule change over time.
-    """
-    summary = []
-    for i in [1, 2, 3]:
-        snap = engine.iteration_models.get(i)
-        if snap:
-            rules_df = snap["rules"]
-            top_rule = {}
-            if not rules_df.empty:
-                r = rules_df.iloc[0]
-                top_rule = {
-                    "antecedent": "{" + ", ".join(sorted(r["antecedents"])) + "}",
-                    "consequent": "{" + ", ".join(sorted(r["consequents"])) + "}",
-                    "lift":       round(float(r["lift"]), 3),
-                    "score":      round(float(r["score"]), 3),
-                }
-            summary.append({
-                "iteration":     i,
-                "n_transactions":snap["n_transactions"],
-                "auto_minsup":   snap["auto_minsup"],
-                "auto_minconf":  snap["auto_minconf"],
-                "n_itemsets":    len(snap["frequent_itemsets"]),
-                "n_rules":       len(rules_df) if not rules_df.empty else 0,
-                "top_rule":      top_rule,
-            })
-    return jsonify(summary)
+    """Return iteration summaries for the active dataset."""
+    return jsonify(_build_summary_payload(engine))
 
 
 # --------------------------------------------------------------------------
 # MAIN
 # --------------------------------------------------------------------------
 if __name__ == "__main__":
-    precompute_all_iterations()
     print("\n" + "="*60)
-    print(f"  Dataset : {os.path.basename(_CSV_PATH)}")
-    print(f"  Records : {_N} transactions")
+    if _CSV_PATH:
+        print(f"  Dataset : {os.path.basename(_CSV_PATH)}")
+        print(f"  Records : {len(ALL_TRANSACTIONS)} transactions")
+    else:
+        print("  Dataset : none loaded yet")
+        print("  Action  : upload a CSV from the Pipeline page")
     print("  Open your browser at:  http://127.0.0.1:5000")
     print("="*60 + "\n")
     app.run(debug=False, port=5000)

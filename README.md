@@ -57,7 +57,12 @@ python app.py
 
 Open your browser at **http://127.0.0.1:5000**
 
-The server pre-computes all 3 iterations automatically at startup (~2–5 s).
+The server loads the default dataset automatically at startup (~2–5 s).
+From the new **Pipeline** page in the navbar, you can upload a CSV and run:
+
+`Data Source → Cleaning → Encoding → Mining Engine → Rules → Scoring → Storage → Recommendations`
+
+without using a terminal prompt.
 
 ---
 
@@ -91,6 +96,7 @@ Data Mining Group/
 
 | Page | What you see |
 |---|---|
+| 🧭 Pipeline | Upload a CSV, run the full processing flow, and switch into the dashboard once the dataset is ready |
 | 📊 Overview | Stats cards, support chart, conf-vs-lift bubble chart, iteration comparison table |
 | 📦 Frequent Itemsets | All frequent itemsets with support bars |
 | ⚡ Association Rules | All rules with support / confidence / lift / leverage / conviction / custom score |

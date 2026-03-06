@@ -2,9 +2,21 @@
 const { useState, useEffect, useRef } = React;
 
 const PRIMARY_PAGES = [
+  { id: "pipeline", label: "Pipeline" },
   { id: "overview", label: "Dashboard" },
   { id: "itemsets", label: "Frequent Itemsets" },
   { id: "rules", label: "Association Rules" },
+];
+
+const PIPELINE_STEPS = [
+  { id: "data-source", label: "Data Source", blurb: "Read the uploaded CSV and register the dataset source." },
+  { id: "cleaning", label: "Cleaning", blurb: "Trim blanks, normalize each basket, and remove duplicates inside a transaction." },
+  { id: "encoding", label: "Encoding", blurb: "Convert transactions into one-hot vectors for pattern mining." },
+  { id: "mining-engine", label: "Mining Engine", blurb: "Run FP-Growth over three cumulative learning iterations." },
+  { id: "rules", label: "Rules", blurb: "Generate association rules from the frequent itemsets." },
+  { id: "scoring", label: "Scoring", blurb: "Rank the rules by support, confidence, and lift-derived score." },
+  { id: "storage", label: "Storage", blurb: "Persist the uploaded file and cache model snapshots for the dashboard." },
+  { id: "recommendations", label: "Recommendations", blurb: "Prepare homepage ranking, bundles, promos, and cross-sell outputs." },
 ];
 
 const INSIGHT_PAGES = [
@@ -110,6 +122,139 @@ function MetricPill({ label, value, tone = "" }) {
     <div className={"metric-pill" + (tone ? " " + tone : "")}>
       <span className="metric-pill-label">{label}</span>
       <strong className="metric-pill-value">{value}</strong>
+    </div>
+  );
+}
+
+function EmptyAnalyticsState({ title = "No Data Yet", message = "Run the machine learning pipeline from the Pipeline page to populate this view." }) {
+  return (
+    <div className="card empty-analytics-card">
+      <div className="card-head">
+        <h3>{title}</h3>
+        <span className="chip">Waiting for ML</span>
+      </div>
+      <div className="empty empty-analytics-copy">{message}</div>
+    </div>
+  );
+}
+
+function PipelineProgressBar({ steps, pipelineSteps, isProcessing, hasDataset }) {
+  const reportById = new Map((pipelineSteps || []).map(step => [step.id, step]));
+
+  return (
+    <div className="pipeline-progress-card">
+      <div className="pipeline-progress-track">
+        {steps.map((step, index) => {
+          const hasReport = reportById.has(step.id);
+          const stateClass = hasReport ? "done" : isProcessing ? "processing" : "pending";
+
+          return (
+            <React.Fragment key={step.id}>
+              <div className={`pipeline-progress-step ${stateClass}`}>
+                <div className="pipeline-progress-dot">{hasReport ? "✓" : index + 1}</div>
+                <div className="pipeline-progress-label">{step.label}</div>
+              </div>
+              {index < steps.length - 1 && <div className={`pipeline-progress-line ${hasReport ? "done" : isProcessing ? "processing" : "pending"}`}></div>}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PagePipeline({
+  datasetInfo,
+  pipelineSteps,
+  selectedFile,
+  isProcessing,
+  processError,
+  onFileSelected,
+  onProcess,
+  onOpenDashboard,
+}) {
+  const hasDataset = Boolean(datasetInfo && datasetInfo.transaction_count);
+
+  return (
+    <div>
+      <PipelineProgressBar
+        steps={PIPELINE_STEPS}
+        pipelineSteps={pipelineSteps}
+        isProcessing={isProcessing}
+        hasDataset={hasDataset}
+      />
+
+      <div className="pipeline-layout">
+        <div className="card pipeline-upload-card">
+          <div className="card-head">
+            <h3>CSV Upload</h3>
+            <span className="chip">Input → Processing</span>
+          </div>
+
+          <form className="pipeline-form" onSubmit={onProcess}>
+            <label className="pipeline-dropzone">
+              <span className="pipeline-dropzone-title">Drop your CSV here or browse from your machine</span>
+              <span className="pipeline-dropzone-subtitle">Accepted format: one transaction per row, comma-separated items.</span>
+              <input type="file" accept=".csv,text/csv" onChange={onFileSelected} />
+            </label>
+
+            <div className="pipeline-file-row">
+              <div>
+                <div className="pipeline-file-label">Selected file</div>
+                <strong>{selectedFile ? selectedFile.name : "No file selected"}</strong>
+              </div>
+              <button className="pipeline-primary-btn" type="submit" disabled={!selectedFile || isProcessing}>
+                {isProcessing ? "Processing..." : "Run Full Pipeline"}
+              </button>
+            </div>
+          </form>
+
+          {processError && <div className="pipeline-error">{processError}</div>}
+
+          <div className="pipeline-status-row pipeline-status-row-single">
+            <MetricPill label="Processed At" value={datasetInfo?.processed_at || "not yet"} tone="tone-green" />
+          </div>
+
+          <div className="pipeline-actions">
+            <button className="pipeline-secondary-btn" type="button" onClick={onOpenDashboard} disabled={!hasDataset}>
+              Open Dashboard
+            </button>
+          </div>
+        </div>
+
+        <div className="card pipeline-dataset-card">
+          <div className="card-head">
+            <h3>Active Dataset</h3>
+            <span className="chip">Live State</span>
+          </div>
+          {hasDataset ? (
+            <div className="pipeline-dataset-grid">
+              <div className="pipeline-dataset-stat">
+                <span>Name</span>
+                <strong>{datasetInfo.name}</strong>
+              </div>
+              <div className="pipeline-dataset-stat">
+                <span>Transactions</span>
+                <strong>{datasetInfo.transaction_count}</strong>
+              </div>
+              <div className="pipeline-dataset-stat">
+                <span>Items</span>
+                <strong>{datasetInfo.item_count}</strong>
+              </div>
+              <div className="pipeline-dataset-stat">
+                <span>Batches</span>
+                <strong>
+                  {datasetInfo.batch_sizes
+                    ? `${datasetInfo.batch_sizes[1]} / ${datasetInfo.batch_sizes[2]} / ${datasetInfo.batch_sizes[3]}`
+                    : "-"}
+                </strong>
+              </div>
+            </div>
+          ) : (
+            <div className="empty">No dataset is loaded. Upload a CSV and run the machine learning pipeline first.</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -226,7 +371,7 @@ function ChartBubble({ data }) {
 
 // ── PageOverview ──────────────────────────────────────────────────────────────
 function PageOverview({ d, summaryData, currentIter }) {
-  if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
+  if (!d) return <EmptyAnalyticsState title="Dashboard Locked" message="The dashboard stays empty until a CSV has finished the machine learning pipeline on the Pipeline page." />;
   return (
     <div>
       <div className="page-heading hero-heading">
@@ -395,7 +540,7 @@ function PageOverview({ d, summaryData, currentIter }) {
 
 // ── PageItemsets ──────────────────────────────────────────────────────────────
 function PageItemsets({ d, searchQ }) {
-  if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
+  if (!d) return <EmptyAnalyticsState title="No Frequent Itemsets Yet" message="Upload a CSV and finish the mining pipeline before this page can show frequent itemsets." />;
   const maxSup = Math.max(...d.freq_itemsets.map(f => f.support), 0.001);
   const rows   = d.freq_itemsets.filter(f =>
     !searchQ || f.items.some(i => i.toLowerCase().includes(searchQ.toLowerCase()))
@@ -448,7 +593,7 @@ function PageItemsets({ d, searchQ }) {
 
 // ── PageRules ─────────────────────────────────────────────────────────────────
 function PageRules({ d, searchQ }) {
-  if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
+  if (!d) return <EmptyAnalyticsState title="No Rules Yet" message="Association rules will appear here only after the pipeline finishes mining and scoring the uploaded data." />;
   const maxScore = d.rules.length ? Math.max(...d.rules.map(r => r.score), 0.001) : 1;
   const rows = d.rules.filter(r =>
     !searchQ ||
@@ -509,7 +654,7 @@ function PageRules({ d, searchQ }) {
 
 // ── PageHomepage ──────────────────────────────────────────────────────────────
 function PageHomepage({ d }) {
-  if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
+  if (!d) return <EmptyAnalyticsState title="Homepage Ranking Unavailable" message="Run the pipeline first so the recommendation engine can rank products from the uploaded dataset." />;
   const maxSup     = Math.max(...d.homepage.map(h => h.support), 0.001);
   const badgeClass = ["gold-badge", "silver-badge", "bronze-badge"];
   return (
@@ -540,7 +685,7 @@ function PageHomepage({ d }) {
 
 // ── PageFreqTogether ──────────────────────────────────────────────────────────
 function PageFreqTogether({ d }) {
-  if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
+  if (!d) return <EmptyAnalyticsState title="No Bundle Data Yet" message="Frequently bought together bundles are generated only after the uploaded CSV has been mined." />;
   return (
     <div>
       <div className="page-heading">
@@ -584,7 +729,7 @@ function PageCrossSell({ d, allItems }) {
     if (allItems.length && !selected) setSelected(allItems[0]);
   }, [allItems]);
 
-  if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
+  if (!d) return <EmptyAnalyticsState title="Cross-Sell Locked" message="Cross-sell recommendations require a completed machine learning run from the Pipeline page." />;
   const cartSet = new Set(cartItems);
   const recommendationMap = new Map();
   const rules = Array.isArray(d.rules) ? d.rules : [];
@@ -743,7 +888,7 @@ function PageCrossSell({ d, allItems }) {
 
 // ── PagePromos ────────────────────────────────────────────────────────────────
 function PagePromos({ d }) {
-  if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
+  if (!d) return <EmptyAnalyticsState title="Promo Suggestions Unavailable" message="Promotional suggestions appear only after the uploaded dataset has been scored by the rule engine." />;
   const typeClass = { "Buy-2-Get-Discount": "", "Bundle Deal": "bundle", "Cross-Sell Promo": "xsell" };
   return (
     <div>
@@ -770,7 +915,7 @@ function PagePromos({ d }) {
 
 // ── PageBizInsights ───────────────────────────────────────────────────────────
 function PageBizInsights({ d }) {
-  if (!d) return <div className="loader"><span className="spinner"></span>Loading…</div>;
+  if (!d) return <EmptyAnalyticsState title="Business Insights Unavailable" message="Business insights are generated only after the data pipeline completes and recommendations are stored." />;
   const typeMap = {
     "Power Item":         { cls: "badge-power" },
     "Shelf Placement":    { cls: "badge-shelf" },
@@ -807,12 +952,26 @@ function PageBizInsights({ d }) {
 
 // ── App (root component) ──────────────────────────────────────────────────────
 function App() {
-  const [activePage,  setActivePage]  = useState("overview");
+  const [activePage,  setActivePage]  = useState("pipeline");
   const [currentIter, setCurrentIter] = useState(1);
   const [iterData,    setIterData]    = useState({});
   const [summaryData, setSummaryData] = useState([]);
   const [allItems,    setAllItems]    = useState([]);
+  const [datasetInfo, setDatasetInfo] = useState(null);
+  const [pipelineSteps, setPipelineSteps] = useState([]);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processError, setProcessError] = useState("");
   const [searchQ]                     = useState("");
+
+  const applyBootstrapPayload = (payload) => {
+    setDatasetInfo(payload.dataset && payload.dataset.transaction_count ? payload.dataset : null);
+    setSummaryData(payload.summary || []);
+    setAllItems(payload.items || []);
+    setPipelineSteps(payload.pipeline || []);
+    setIterData(payload.iteration_1 ? { 1: payload.iteration_1 } : {});
+    setCurrentIter(1);
+  };
 
   // Load one iteration (cache in state)
   const loadIter = async (n) => {
@@ -827,15 +986,15 @@ function App() {
 
   // Bootstrap on mount
   useEffect(() => {
-    Promise.all([
-      fetch("/api/summary").then(r => r.json()),
-      fetch("/api/items").then(r => r.json()),
-      fetch("/api/iteration/1").then(r => r.json()),
-    ]).then(([summary, items, iter1]) => {
-      setSummaryData(summary);
-      setAllItems(items);
-      setIterData({ 1: iter1 });
-    });
+    fetch("/api/bootstrap")
+      .then(async response => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Unable to load the app state.");
+        applyBootstrapPayload(payload);
+      })
+      .catch(error => {
+        setProcessError(error.message || "Unable to load the app state.");
+      });
   }, []);
 
   const handleIterChange = (n) => {
@@ -843,14 +1002,66 @@ function App() {
     loadIter(n);
   };
 
+  const handleFileSelected = (event) => {
+    const [file] = event.target.files || [];
+    setSelectedFile(file || null);
+    setProcessError("");
+  };
+
+  const handlePipelineSubmit = async (event) => {
+    event.preventDefault();
+    if (!selectedFile) {
+      setProcessError("Choose a CSV file before running the pipeline.");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+
+    setIsProcessing(true);
+    setProcessError("");
+    try {
+      const response = await fetch("/api/pipeline/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "The pipeline request failed.");
+      }
+
+      applyBootstrapPayload(payload);
+      setSelectedFile(null);
+    } catch (error) {
+      setProcessError(error.message || "The pipeline request failed.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const d = iterData[currentIter];
+  const showIterBanner = activePage !== "pipeline" && summaryData.length > 0;
 
   return (
     <div className={"app-shell theme-" + activePage}>
       <Header activePage={activePage} onPageChange={setActivePage} />
-      <IterBanner currentIter={currentIter} onIterChange={handleIterChange} summaryData={summaryData} iterData={iterData} />
+      {showIterBanner && (
+        <IterBanner currentIter={currentIter} onIterChange={handleIterChange} summaryData={summaryData} iterData={iterData} />
+      )}
 
       <div className="main-content">
+        {activePage === "pipeline"      && (
+          <PagePipeline
+            datasetInfo={datasetInfo}
+            pipelineSteps={pipelineSteps}
+            selectedFile={selectedFile}
+            isProcessing={isProcessing}
+            processError={processError}
+            onFileSelected={handleFileSelected}
+            onProcess={handlePipelineSubmit}
+            onOpenDashboard={() => setActivePage("overview")}
+          />
+        )}
         {activePage === "overview"      && <PageOverview     d={d} summaryData={summaryData} currentIter={currentIter} />}
         {activePage === "itemsets"      && <PageItemsets     d={d} searchQ={searchQ} />}
         {activePage === "rules"         && <PageRules        d={d} searchQ={searchQ} />}
