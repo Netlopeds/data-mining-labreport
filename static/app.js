@@ -27,6 +27,13 @@ const INSIGHT_PAGES = [
   { id: "biz-insights", label: "Business Insights" },
 ];
 
+const INSIGHT_EXPLANATIONS = {
+  "Power Item": "A power item appears in many baskets and acts as a demand anchor, so it should stay highly visible and well stocked.",
+  "Shelf Placement": "Shelf placement means these items are often bought together, so placing them nearby reduces friction and increases bundle pickup.",
+  "Upsell Opportunity": "An upsell opportunity points to a higher-value or complementary add-on that customers are likely to accept once the trigger item is in the basket.",
+  "Slow Mover": "A slow mover appears less often or lags stronger basket patterns, so it may need bundling, repositioning, or promotional support to improve sell-through.",
+};
+
 const DASH_COLORS = {
   coral: "rgba(239, 113, 89, 0.65)",
   coralBorder: "#ef7159",
@@ -915,12 +922,12 @@ function PagePromos({ d }) {
 
 // ── PageBizInsights ───────────────────────────────────────────────────────────
 function PageBizInsights({ d }) {
-  if (!d) return <EmptyAnalyticsState title="Business Insights Unavailable" message="Business insights are generated only after the data pipeline completes and recommendations are stored." />;
+  if (!d) return <EmptyAnalyticsState title="Business Insights Unavailable" message="Business insights are generated only after the data pipeline completes and recommendations are ready." />;
   const typeMap = {
-    "Power Item":         { cls: "badge-power" },
-    "Shelf Placement":    { cls: "badge-shelf" },
-    "Upsell Opportunity": { cls: "badge-upsell" },
-    "Slow Mover":         { cls: "badge-slow" },
+    "Power Item":         { cls: "badge-power", detail: INSIGHT_EXPLANATIONS["Power Item"] },
+    "Shelf Placement":    { cls: "badge-shelf", detail: INSIGHT_EXPLANATIONS["Shelf Placement"] },
+    "Upsell Opportunity": { cls: "badge-upsell", detail: INSIGHT_EXPLANATIONS["Upsell Opportunity"] },
+    "Slow Mover":         { cls: "badge-slow", detail: INSIGHT_EXPLANATIONS["Slow Mover"] },
   };
   return (
     <div>
@@ -936,10 +943,19 @@ function PageBizInsights({ d }) {
           ? <div className="empty">No insights for this iteration.</div>
           : <div className="insight-list">
               {d.biz_insights.map((ins, i) => {
-                const { cls } = typeMap[ins.type] || { cls: "badge-power" };
+                const { cls, detail } = typeMap[ins.type] || { cls: "badge-power", detail: "This insight flags a meaningful merchandising pattern found in the basket data." };
                 return (
                   <div key={i} className="insight-row">
-                    <span className={"insight-type-badge " + cls}>{ins.type}</span>
+                    <span className="insight-badge-wrap">
+                      <span
+                        className={"insight-type-badge " + cls}
+                        tabIndex="0"
+                        aria-label={`${ins.type}. ${detail}`}
+                      >
+                        {ins.type}
+                      </span>
+                      <span className="insight-type-tooltip" role="note">{detail}</span>
+                    </span>
                     <div className="insight-text">{ins.insight}</div>
                   </div>
                 );
