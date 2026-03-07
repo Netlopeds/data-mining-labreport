@@ -88,13 +88,4 @@ def get_summary() -> Response:
 
 
 if __name__ == "__main__":
-    print("\n" + "=" * 60)
-    if service.active_dataset_path:
-        print(f"  Dataset : {os.path.basename(service.active_dataset_path)}")
-        print(f"  Records : {len(service.transactions)} transactions")
-    else:
-        print("  Dataset : none loaded yet")
-        print("  Action  : upload a CSV from the Pipeline page")
-    print("  Open your browser at:  http://127.0.0.1:5000")
-    print("=" * 60 + "\n")
     app.run(debug=False, port=5000)
