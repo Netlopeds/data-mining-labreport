@@ -2,32 +2,8 @@
 
 A self-learning association-rule engine powered by **FP-Growth** that evolves over 3 data iterations and serves an interactive web dashboard via Flask.
 
----
 
-## Quick start
-
-> **Python 3.9 or higher is required.**
-
-### 1. Clone the repo
-
-```bash
-git clone https://github.com/Netlopeds/data-mining-labreport.git
-cd data-mining-labreport
-```
-
-### 2. (Optional) Create a virtual environment
-
-```bash
-python -m venv .venv
-
-# activate — Windows
-.venv\Scripts\activate
-
-# activate — macOS / Linux
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
@@ -49,7 +25,7 @@ This installs:
 > pip install flask mlxtend pandas numpy scikit-learn scipy
 > ```
 
-### 4. Run the app
+### 2. Run the app
 
 ```bash
 python app.py
